@@ -70,6 +70,7 @@ class Context(object):
                 'No scenario for "{0}" @ "{1}"'.format(name, path)
             )
         logger.debug('located scenario "%s" @ "%s"', name, path)
+        # returns an instance of a Scenario class
         return Scenario(self, path)
 
     def backfill_scenario(self, name):
@@ -309,6 +310,7 @@ class Scenario(object):
     def __init__(self, ctx, path):
         self.ctx = ctx
         self.name = os.path.basename(path)
+        # need to change this path to the new path of the templates
         self.path = path
         self.definition = None
         self.request = None
@@ -316,7 +318,7 @@ class Scenario(object):
     @property
     def metadata(self):
         if (self.name not in self.ctx.storage or
-            'request' not in self.ctx.storage[self.name]):
+                'request' not in self.ctx.storage[self.name]):
             context = {
                 'json': json,
                 'ctx': self.ctx,
@@ -327,7 +329,8 @@ class Scenario(object):
             execfile(metadata, context, context)
             self.ctx.storage[self.name]['request'] = context['request']
         return self.ctx.storage[self.name]['request']
-
+    # this method defines when a scenario instance is actually called
+    # e.g. scenario(), it returns an array of blocks, for different langauges and a response
     def __call__(self):
         blocks = []
         curl = None
@@ -343,11 +346,34 @@ class Scenario(object):
         response = curl.get('response') if curl else None
         return blocks, response
 
+    #this method lazily loads a 'block' of code for a specific language
     def block(self, lang):
+        """
+        This method lazily loads a 'block' of code for a specific language
+        :param lang: the language
+        :type lang: basestring
+        """
+        # import ipdb; ipdb.set_trace()
         if lang not in self.ctx.langs:
             return None
-        template_path = os.path.join(self.path, lang + '.mako')
-        block = self._render(template_path)
+
+        def ruby():
+            """
+            Executes for the ruby language o
+            """
+            template_path = os.path.join(
+                os.getcwd(), 'scenarios_test', lang, 'scenarios', self.name
+            )
+            return self._render_ruby(template_path)
+
+        def other():
+            template_path = os.path.join(self.path, lang + '.mako')
+            return self._render(template_path)
+
+        block = {
+            'ruby': ruby,
+        }.get(lang, other)()
+        # this renders the .mako template and saves it to block
         block['lang'] = lang
         if block['lang'] == 'curl':
             if 'delete' in self.name:
@@ -360,6 +386,19 @@ class Scenario(object):
                 )
                 self.ctx.storage[self.name]['response'] = block['response']
         return block
+
+    def _render_ruby(self, template_path):
+        definition_location = os.path.join(template_path, 'definition.rb')
+        definition = open(definition_location, 'r').read()
+        os.path.dirname(os.path.dirname(template_path))
+        request = subprocess.check_output(
+            ['rake', 'render_one', 'NAME=' + self.name],
+            cwd=os.path.dirname(os.path.dirname(template_path))
+        )
+        return {
+            'definition': definition,
+            'request': request
+        }
 
     def _render(self, template_path):
         if 'api.balancedpayments.com' in self.ctx.storage['api_location']:
@@ -375,7 +414,7 @@ class Scenario(object):
         context.update(request=self.metadata)
 
         # definition
-        logger.debug('rendering defintion for "%s"', template_path)
+        logger.debug('rendering definition for "%s"', template_path)
         template = mako.template.Template(
             filename=template_path,
             lookup=self.ctx.template_lookup
@@ -401,7 +440,7 @@ class Scenario(object):
             raise
 
         return {
-            'defintion': definition,
+            'definition': definition,
             'request': request,
         }
 
@@ -446,7 +485,7 @@ def generate(write, name, blocks, response, section_chars):
             write('.. code-block:: {0}\n'.format(pygment))
             with write:
                 write('\n')
-                write(block['defintion'])
+                write(block['definition'])
             write('\n')
 
     for block in blocks:
@@ -553,7 +592,6 @@ def main():
     handler.setFormatter(formatter)
     root.addHandler(handler)
     root.setLevel(args.log_level)
-
     ctx = Context(
         api_location=args.api_location,
         scenarios_dir=os.path.abspath(args.directory),
@@ -565,7 +603,9 @@ def main():
     write = BlockWriter(sys.stdout)
     for scenario in args.scenarios:
         logger.debug('scenario "%s"', scenario)
+        # lookup_scenario method returns an instance of Scenario object
         scenario = ctx.lookup_scenario(scenario)
+        # blocks is an array of different language code blocks
         blocks, response = scenario()
         generate(write, scenario.name, blocks, response, args.sections)
     ctx.storage.save()
